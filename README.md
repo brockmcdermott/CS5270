@@ -2,89 +2,84 @@
 ### Step 1 – Design Overview
 
 ## 1️⃣ Goal
-Build a **Consumer program** that processes *Widget Requests* from **Bucket 2** and stores results in either **Bucket 3** or a **DynamoDB table**.  
+Build a **Consumer program** that processes *Widget Requests* from **Bucket 2** and stores results in either **Bucket 3** (S3) or a **DynamoDB table**.  
 Each request represents one widget creation, update, or deletion.
 
-For **HW6**, you will **implement only Create Requests** — but your design must **anticipate Delete and Update Requests** in later assignments.  
-:contentReference[oaicite:0]{index=0}:contentReference[oaicite:1]{index=1}
+For **HW6**, you will **implement only `WidgetCreateRequest`** — but your design must **anticipate `WidgetDeleteRequest` and `WidgetUpdateRequest`** for later assignments.  
+Requests strictly follow the provided `widgetRequest-schema.json`.
 
 ---
 
 ## 2️⃣ System Flow
 1. **Read one Widget Request** from Bucket 2 at a time (in key order – smallest key first).  
-   - Do not bulk-list the entire bucket; retrieve a single object each loop.  
-   - This makes the program efficient and scalable for future multi-Consumer use.  
-   :contentReference[oaicite:2]{index=2}
+   - Do *not* bulk-list the entire bucket; retrieve just the next key each loop.  
+   - This ensures scalability for future multi-Consumer designs.
 
 2. **If a request is found**  
    - Delete the object from Bucket 2.  
-   - Process the request according to its type (Create for HW6).  
-   - Immediately resume polling for the next request.  
-   :contentReference[oaicite:3]{index=3}
+   - Parse the JSON into a validated `WidgetRequest` model.  
+   - Process according to its `type` (only `WidgetCreateRequest` is handled in HW6).  
+   - Immediately resume polling for the next request.
 
 3. **If no request is available**  
-   - Sleep ~100 milliseconds and try again (polling loop).  
-   :contentReference[oaicite:4]{index=4}
+   - Sleep ≈ 100 milliseconds and retry (polling loop).
 
-4. **Repeat until a stop condition** (e.g., manual interrupt or CLI limit).
+4. **Repeat until a stop condition** (manual interrupt or CLI limit).
 
 ---
 
 ## 3️⃣ Command-Line Arguments
-Allow the user to choose:
+The program accepts configuration options such as:  
 - **Storage strategy** (`--target s3 | dynamodb`)  
 - **Resource names** (`--bucket2`, `--bucket3`, `--table`)  
-- Optional parameters: `--sleep-ms`, `--stop-after`, `--log-file`
+- Optional parameters: `--sleep-ms`, `--stop-after`, `--log-file`  
 
-Use a third-party CLI library for easier argument parsing.  
-:contentReference[oaicite:5]{index=5}
+Use a mature 3rd-party CLI library (e.g., `click`, `argparse`) for simplicity and clarity.
 
 ---
 
 ## 4️⃣ Architecture & Modules
 ### A. Poller (Input)
-Encapsulate request retrieval from Bucket 2.  
-Future assignments will swap this out for a queue, so keep it modular.  
-:contentReference[oaicite:6]{index=6}
+Encapsulates request retrieval from Bucket 2.  
+It lists one object key (smallest first), reads it, deletes it, and returns the JSON text.  
+This module will later be replaceable with a queue-based source (e.g., SQS).
 
-### B. Parser / Validator
-Use a standard JSON library to parse the Widget Request schema. Do not write a custom parser.  
-Validate required fields (type, requestId, widgetId, owner pattern [A-Za-z  ]).  
-:contentReference[oaicite:7]{index=7}
+### B. Parser / Validator (`models.py`)
+Parse the JSON according to the official schema:  
+- `type` must match `WidgetCreateRequest | WidgetDeleteRequest | WidgetUpdateRequest`  
+- `requestId`, `widgetId`, and `owner` are required.  
+- `owner` must match `[A-Za-z ]+`.  
+Use a standard JSON or Pydantic library — never write a custom parser.
 
 ### C. Router (Request Handler)
-- **Create Request:** Store widget in the selected target.  
-- **Delete Request:** Log a warning if object does not exist (do not error).  
-- **Update Request:** Plan logic for HW7 (e.g., partial field updates, null/empty rules).  
-:contentReference[oaicite:8]{index=8}:contentReference[oaicite:9]{index=9}
+- **WidgetCreateRequest:** Store the new widget in the chosen target.  
+- **WidgetDeleteRequest:** Log a warning if the object does not exist (do not throw errors).  
+- **WidgetUpdateRequest:** Reserved for HW7 (e.g., partial updates, null/empty rules).
 
 ### D. Storage Targets (Strategy Pattern)
-1. **S3 Store:**  
-   - Serialize widget as JSON.  
-   - Save to `widgets/{owner}/{widgetId}`.  
-   - Derive `{owner}` by lower-casing and replacing spaces with dashes.  
-   :contentReference[oaicite:10]{index=10}
-
-2. **DynamoDB Store:**  
-   - Each widget attribute (including those under `otherAttributes`) becomes a top-level attribute — not a map or list.  
-   :contentReference[oaicite:11]{index=11}
+1. **S3 Store**  
+   - Serialize the widget to JSON.  
+   - Save at: `widgets/{ownerSlug}/{widgetId}` where `ownerSlug = owner.lower().replace(" ", "-")`.  
+2. **DynamoDB Store**  
+   - Each widget attribute (including `otherAttributes`) becomes a top-level attribute — never a map or list.  
 
 ### E. Logging
-Use an open-source logging library (not manual file I/O).  
-Log info, warnings, and errors with timestamps.  
-:contentReference[oaicite:12]{index=12}
+Use a standard logging library (avoid manual file I/O).  
+Record info, warnings, and errors with timestamps.  
+Write to both console and a log file (e.g., `consumer.log`).
 
 ---
 
 ## 5️⃣ Polling Loop Pseudo-Code
 ```text
 Loop until stop condition:
-    request = get_next_request()
-    if request exists:
+    request_json = poller.get_next()
+    if request_json exists:
         delete_request_from_bucket2()
-        if request.type == "create":
-            store_widget(request)
-        elif request.type in ("delete", "update"):
+        req = parse_and_validate(request_json)
+        if req.type == "WidgetCreateRequest":
+            store_widget(req)
+        elif req.type in ("WidgetDeleteRequest", "WidgetUpdateRequest"):
             log_warning("Not implemented in HW6")
     else:
         sleep(100ms)
